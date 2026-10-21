@@ -65,6 +65,11 @@ private enum SortKey: String, CaseIterable, Identifiable {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var alertMessage: String?
     @State private var warning: QuotaWarning?
+    // multi-select + ZIP download
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
+    @State private var zipping = false
+    @State private var zipShare: SharedFile?
 
     private var sharedRoot: Bool { source == .shared && folder == nil }
     private var canCreate: Bool {
@@ -93,6 +98,7 @@ private enum SortKey: String, CaseIterable, Identifiable {
             .navigationBarTitleDisplayMode(folder == nil ? .large : .inline)
             .searchable(text: $query, prompt: "Search in this folder")
             .toolbar { toolbarContent }
+            .toolbar { selectionBar }
             .task(id: model.changeCounter) { await load() }
             .refreshable { await load() }
             // dialogs
@@ -120,6 +126,8 @@ private enum SortKey: String, CaseIterable, Identifiable {
             .sheet(item: $sharing) { ShareView(node: $0) }
             .sheet(item: $moving) { MovePickerView(node: $0) }
             .sheet(isPresented: $showUploads) { UploadsView() }
+            .sheet(item: $zipShare) { ActivityView(url: $0.url) }
+            .overlay { if zipping { ProgressView("Preparing ZIP…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14)) } }
             .fullScreenCover(item: $previewing) { PreviewScreen(node: $0) }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { enqueue(Importers.copyIntoSandbox(urls)) }
@@ -167,7 +175,17 @@ private enum SortKey: String, CaseIterable, Identifiable {
     }
 
     @ViewBuilder private func row(_ node: DriveNode) -> some View {
-        if node.isFolder && source != .trash {
+        if selecting {
+            Button { toggle(node) } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: selection.contains(node.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selection.contains(node.id) ? Color.accentColor : .secondary)
+                        .imageScale(.large)
+                    NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, showDeleted: source == .trash)
+                }
+            }
+            .buttonStyle(.plain)
+        } else if node.isFolder && source != .trash {
             NavigationLink(value: FolderRoute(id: node.id, name: node.name)) {
                 NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy)
             }
@@ -187,6 +205,8 @@ private enum SortKey: String, CaseIterable, Identifiable {
             Button(role: .destructive) { purging = node } label: { Label("Delete forever", systemImage: "trash") }
         } else {
             if !node.isFolder { Button { open(node) } label: { Label("Open", systemImage: "eye") } }
+            if node.isFolder { Button { downloadZip([node]) } label: { Label("Download as ZIP", systemImage: "arrow.down.circle") } }
+            Button { selecting = true; selection = [node.id] } label: { Label("Select", systemImage: "checkmark.circle") }
             if node.myRole.canManage { Button { sharing = node } label: { Label("Share", systemImage: "person.badge.plus") } }
             if node.myRole.canEdit && !node.isSystemFolder {
                 Button { renameText = node.name; renaming = node } label: { Label("Rename", systemImage: "pencil") }
@@ -218,8 +238,30 @@ private enum SortKey: String, CaseIterable, Identifiable {
 
     // MARK: - Toolbar
 
+    /// Selection mode: Cancel / count at the top, bulk actions at the bottom.
+    @ToolbarContentBuilder private var selectionBar: some ToolbarContent {
+        if selecting {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(selection.count == visible.count ? "Select none" : "Select all") {
+                    selection = selection.count == visible.count ? [] : Set(visible.map(\.id))
+                }
+            }
+            ToolbarItem(placement: .principal) { Text(selection.isEmpty ? "Select items" : "\(selection.count) selected").font(.headline) }
+            ToolbarItem(placement: .topBarTrailing) { Button("Done") { selecting = false; selection = [] } }
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button { downloadZip(selectedNodes) } label: { Label("Download", systemImage: "arrow.down.circle") }
+                    .disabled(selection.isEmpty || source == .trash)
+                Spacer()
+                if canTrashSelection {
+                    Button(role: .destructive) { trashSelected() } label: { Label("Trash", systemImage: "trash") }
+                        .disabled(selection.isEmpty)
+                }
+            }
+        }
+    }
+
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        if !selecting { ToolbarItemGroup(placement: .topBarTrailing) {
             if model.uploads.activeCount > 0 || !model.uploads.items.isEmpty {
                 Button { showUploads = true } label: {
                     Image(systemName: model.uploads.activeCount > 0 ? "arrow.up.circle.fill" : "arrow.up.circle")
@@ -229,6 +271,7 @@ private enum SortKey: String, CaseIterable, Identifiable {
                 if !items.isEmpty { Button("Empty") { confirmEmpty = true } }
             } else {
                 Menu {
+                    Button { selecting = true; selection = [] } label: { Label("Select", systemImage: "checkmark.circle") }
                     Picker("Sort by", selection: $sort) { ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) } }
                 } label: { Image(systemName: "arrow.up.arrow.down") }
 
@@ -242,7 +285,7 @@ private enum SortKey: String, CaseIterable, Identifiable {
                     } label: { Image(systemName: "plus") }
                 }
             }
-        }
+        } }
     }
 
     // MARK: - Actions
@@ -270,6 +313,59 @@ private enum SortKey: String, CaseIterable, Identifiable {
             if (error as? URLError)?.code != .cancelled { loadError = error.localizedDescription }
         }
         loading = false
+    }
+
+    // MARK: Selection + ZIP
+
+    private var selectedNodes: [DriveNode] { visible.filter { selection.contains($0.id) } }
+
+    /// Trashing needs edit rights on everything selected, outside the Shared root and not on protected system folders.
+    private var canTrashSelection: Bool {
+        source == .myDrive || (source == .shared && folder != nil)
+            ? !selection.isEmpty && selectedNodes.allSatisfy { $0.myRole.canEdit && !$0.isSystemFolder }
+            : false
+    }
+
+    private func toggle(_ node: DriveNode) {
+        if selection.contains(node.id) { selection.remove(node.id) } else { selection.insert(node.id) }
+    }
+
+    private func trashSelected() {
+        let nodes = selectedNodes
+        selecting = false
+        selection = []
+        run { for n in nodes { try await model.client.trash(n) } }
+    }
+
+    /// Plans the ZIP first (what it costs today), warns if it probably won't fit, then streams it and opens the share sheet.
+    private func downloadZip(_ nodes: [DriveNode]) {
+        guard !nodes.isEmpty else { return }
+        let ids = nodes.map(\.id)
+        Task {
+            do {
+                let plan = try await model.client.zipPlan(ids: ids)
+                let go = { startZip(ids) }
+                if let w = QuotaWarnings.zip(plan: plan, me: model.me, onConfirm: go) { warning = w } else { go() }
+            } catch {
+                alertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func startZip(_ ids: [String]) {
+        zipping = true
+        Task {
+            defer { zipping = false }
+            do {
+                let url = try await model.client.downloadZip(ids: ids)
+                await model.refreshMe()               // the ZIP spent part of today's download + compute allowance
+                selecting = false
+                selection = []
+                zipShare = SharedFile(url: url)
+            } catch {
+                alertMessage = error.localizedDescription
+            }
+        }
     }
 
     private func run(_ work: @escaping () async throws -> Void) {

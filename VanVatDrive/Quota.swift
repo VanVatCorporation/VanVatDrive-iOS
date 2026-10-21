@@ -92,6 +92,36 @@ enum QuotaWarnings {
     }
 }
 
+extension QuotaWarnings {
+    /// The warnings before zipping a selection: compute first (zipping is what spends it), then the daily download cap.
+    static func zip(plan: ZipPlan, me: Me?, onConfirm: @escaping () -> Void) -> QuotaWarning? {
+        if plan.computeAllowed == false {
+            return QuotaWarning(
+                title: "Daily compute limit warning",
+                message: "Zipping this selection needs about \(Fmt.credits(plan.computeCredits ?? 0)) compute credits, but only \(Fmt.credits(plan.computeRemainingCredits ?? 0)) are left today (the limit is shared across all Van Vat services). The download may be refused.",
+                onConfirm: onConfirm)
+        }
+        let downloadOk = plan.downloadAllowed ?? plan.allowed
+        let free = me?.usage?.downloadFree ?? plan.remainingBytes
+        if !downloadOk || plan.totalBytes > free {
+            return QuotaWarning(
+                title: "Daily download limit warning",
+                message: "You might not have enough daily download quota left for this selection (\(Fmt.bytes(plan.totalBytes)) requested, only \(Fmt.bytes(plan.remainingBytes)) left today). The download may be cut off once the limit is reached.",
+                onConfirm: onConfirm)
+        }
+        return nil
+    }
+}
+
+/// The system share sheet (Save to Files, AirDrop...) for a downloaded file.
+struct ActivityView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: [url], applicationActivities: nil) }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+struct SharedFile: Identifiable { let id = UUID(); let url: URL }
+
 /// "Get more resources": opens the account tier upgrade in the browser.
 struct GetMoreResourcesButton: View {
     @Environment(\.openURL) private var openURL

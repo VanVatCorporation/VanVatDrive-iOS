@@ -181,6 +181,25 @@ public final class DriveClient: @unchecked Sendable {
         return try await downloadFile(req, id: node.id, name: node.name)
     }
 
+    /// What a ZIP of these items (folders recursively) would cost today.
+    public func zipPlan(ids: [String]) async throws -> ZipPlan {
+        try await send(ZipPlan.self, "GET", "/download/zip/plan", query: ["ids": ids.joined(separator: ",")])
+    }
+
+    /// Streams a ZIP of the items into Caches/VanVatDrive/<uuid>/ and returns it; the server names the file.
+    public func downloadZip(ids: [String]) async throws -> URL {
+        let req = try makeRequest("GET", "/download/zip", query: ["ids": ids.joined(separator: ",")])
+        let (tmp, response) = try await session.download(for: req)
+        try check(response, nil)
+        let name = response.suggestedFilename ?? "Van Vat Drive.zip"
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VanVatDrive", isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(name)
+        try FileManager.default.moveItem(at: tmp, to: dest)
+        return dest
+    }
+
     func downloadFile(_ req: URLRequest, id: String, name: String) async throws -> URL {
         let (tmp, response) = try await session.download(for: req)
         try check(response, nil)

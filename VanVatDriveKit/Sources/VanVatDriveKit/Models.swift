@@ -82,6 +82,20 @@ public struct Me: Codable, Sendable, Equatable {
     public var storageFree: Int64 { max(0, quotaBytes - usedBytes) }
 }
 
+/// What a ZIP of a selection would cost (GET /download/zip/plan), so the app can warn before streaming it.
+public struct ZipPlan: Codable, Sendable, Equatable {
+    public let fileCount: Int
+    public let totalBytes: Int64
+    public let allowed: Bool
+    public let remainingBytes: Int64
+    public let resetsAt: Date?
+    /// Separate verdicts (nil from older servers): the daily download cap and the compute quota.
+    public let downloadAllowed: Bool?
+    public let computeAllowed: Bool?
+    public let computeCredits: Double?
+    public let computeRemainingCredits: Double?
+}
+
 public struct Listing: Decodable, Sendable {
     public let role: DriveRole
     public let path: [PathItem]
