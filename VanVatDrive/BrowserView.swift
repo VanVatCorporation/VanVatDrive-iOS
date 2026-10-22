@@ -56,7 +56,7 @@ private enum SortKey: String, CaseIterable, Identifiable {
     @State private var renaming: DriveNode?
     @State private var renameText = ""
     @State private var sharing: DriveNode?
-    @State private var moving: DriveNode?
+    @State private var picker: PickerRequest?
     @State private var previewing: DriveNode?
     @State private var purging: DriveNode?
     @State private var confirmEmpty = false
@@ -124,9 +124,11 @@ private enum SortKey: String, CaseIterable, Identifiable {
             } message: { Text("Everything in the trash is deleted forever.") }
             // sheets
             .sheet(item: $sharing) { ShareView(node: $0) }
-            .sheet(item: $moving) { MovePickerView(node: $0) }
+            .sheet(item: $picker) { MovePickerView(nodes: $0.nodes, copy: $0.copy) }
             .sheet(isPresented: $showUploads) { UploadsView() }
             .sheet(item: $zipShare) { ActivityView(url: $0.url) }
+            .toolbar(selecting ? .hidden : .automatic, for: .tabBar)
+            .safeAreaInset(edge: .bottom) { if selecting { selectionActionBar } }
             .overlay { if zipping { ProgressView("Preparing ZIP…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14)) } }
             .fullScreenCover(item: $previewing) { PreviewScreen(node: $0) }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -181,17 +183,17 @@ private enum SortKey: String, CaseIterable, Identifiable {
                     Image(systemName: selection.contains(node.id) ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(selection.contains(node.id) ? Color.accentColor : .secondary)
                         .imageScale(.large)
-                    NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, showDeleted: source == .trash)
+                    NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, showDeleted: source == .trash, thumbnails: thumbnailsOn)
                 }
             }
             .buttonStyle(.plain)
         } else if node.isFolder && source != .trash {
             NavigationLink(value: FolderRoute(id: node.id, name: node.name)) {
-                NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy)
+                NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, thumbnails: thumbnailsOn)
             }
         } else {
             Button { open(node) } label: {
-                NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, showDeleted: source == .trash)
+                NodeRow(node: node, sharedBy: sharedMeta[node.id]?.sharedBy, showDeleted: source == .trash, thumbnails: thumbnailsOn)
             }
             .buttonStyle(.plain)
         }
@@ -210,8 +212,10 @@ private enum SortKey: String, CaseIterable, Identifiable {
             if node.myRole.canManage { Button { sharing = node } label: { Label("Share", systemImage: "person.badge.plus") } }
             if node.myRole.canEdit && !node.isSystemFolder {
                 Button { renameText = node.name; renaming = node } label: { Label("Rename", systemImage: "pencil") }
-                if !sharedRoot { Button { moving = node } label: { Label("Move to…", systemImage: "folder") } }
+                if !sharedRoot { Button { picker = PickerRequest(nodes: [node], copy: false) } label: { Label("Move to…", systemImage: "folder") } }
             }
+            // Copying needs no edit rights on the original (read access is enough); system folders cannot be copied.
+            if !node.isSystemFolder { Button { picker = PickerRequest(nodes: [node], copy: true) } label: { Label("Copy to…", systemImage: "doc.on.doc") } }
             if sharedRoot, let pid = sharedMeta[node.id]?.permissionId {
                 Button(role: .destructive) { run { try await model.client.removeAccess(permissionId: pid) } } label: {
                     Label("Remove from Shared", systemImage: "xmark.circle")
@@ -248,17 +252,36 @@ private enum SortKey: String, CaseIterable, Identifiable {
             }
             ToolbarItem(placement: .principal) { Text(selection.isEmpty ? "Select items" : "\(selection.count) selected").font(.headline) }
             ToolbarItem(placement: .topBarTrailing) { Button("Done") { selecting = false; selection = [] } }
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button { downloadZip(selectedNodes) } label: { Label("Download", systemImage: "arrow.down.circle") }
-                    .disabled(selection.isEmpty || source == .trash)
-                Spacer()
-                if canTrashSelection {
-                    Button(role: .destructive) { trashSelected() } label: { Label("Trash", systemImage: "trash") }
-                        .disabled(selection.isEmpty)
-                }
-            }
         }
     }
+
+    /// The actions for the selection, as a bar above the keyboard-safe area (the tab bar hides while selecting).
+    private var selectionActionBar: some View {
+        HStack(alignment: .top, spacing: 0) {
+            actionButton("Download", "arrow.down.circle", enabled: !selection.isEmpty && source != .trash) { downloadZip(selectedNodes) }
+            if canEditSelection { actionButton("Move to…", "folder", enabled: !selection.isEmpty) { picker = PickerRequest(nodes: selectedNodes, copy: false) } }
+            if canCopySelection { actionButton("Copy to…", "doc.on.doc", enabled: !selection.isEmpty) { picker = PickerRequest(nodes: selectedNodes, copy: true) } }
+            if canEditSelection { actionButton("Trash", "trash", enabled: !selection.isEmpty, destructive: true) { trashSelected() } }
+        }
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func actionButton(_ title: String, _ symbol: String, enabled: Bool, destructive: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button(role: destructive ? .destructive : nil, action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.title3)
+                Text(title).font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .disabled(!enabled)
+    }
+
+    /// Image thumbnails follow the account's "Preview thumbnails" setting; never in the trash.
+    private var thumbnailsOn: Bool { source != .trash && (model.me?.previewThumbnails ?? true) }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         if !selecting { ToolbarItemGroup(placement: .topBarTrailing) {
@@ -320,7 +343,11 @@ private enum SortKey: String, CaseIterable, Identifiable {
     private var selectedNodes: [DriveNode] { visible.filter { selection.contains($0.id) } }
 
     /// Trashing needs edit rights on everything selected, outside the Shared root and not on protected system folders.
-    private var canTrashSelection: Bool {
+    private var canCopySelection: Bool {
+        source != .trash && !selection.isEmpty && selectedNodes.allSatisfy { !$0.isSystemFolder }
+    }
+
+    private var canEditSelection: Bool {
         source == .myDrive || (source == .shared && folder != nil)
             ? !selection.isEmpty && selectedNodes.allSatisfy { $0.myRole.canEdit && !$0.isSystemFolder }
             : false

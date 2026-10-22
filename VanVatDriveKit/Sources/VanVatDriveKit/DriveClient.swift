@@ -14,7 +14,7 @@ private struct AnyEncodable: Encodable {
 /// Typed client for the Van Vat Drive API (docs/vanvat-drive-internal-api.md). Auth is `Authorization: Bearer <jwt>`.
 public final class DriveClient: @unchecked Sendable {
     public let endpoints: DriveEndpoints
-    private let session: URLSession
+    let session: URLSession                 // internal: Thumbnails.swift downloads with it
     private let tokenProvider: @Sendable () -> String?
 
     /// The server sends a fresh JWT (X-Refreshed-Token) when the current one is close to expiring: store it.
@@ -128,6 +128,20 @@ public final class DriveClient: @unchecked Sendable {
         struct R: Decodable { let node: DriveNode }
         let body = destination == nil ? B(parentId: nil, moveToRoot: true) : B(parentId: destination, moveToRoot: nil)
         return try await send(R.self, "PATCH", "/nodes/\(node.id)", body: body).node
+    }
+
+    /// Copies an item (a folder recursively) on the server's disk: no download/upload allowance is used, but the copy
+    /// needs free storage. destination nil = the root of My Drive.
+    public func copy(_ node: DriveNode, to destination: String?) async throws -> DriveNode {
+        struct B: Encodable { let parentId: String? }
+        struct R: Decodable { let node: DriveNode }
+        return try await send(R.self, "POST", "/nodes/\(node.id)/copy", body: B(parentId: destination)).node
+    }
+
+    /// Turns image thumbnails on/off for this account (shared with the web and Soprise's picker).
+    public func updateSettings(previewThumbnails: Bool) async throws {
+        struct B: Encodable { let previewThumbnails: Bool }
+        _ = try await send(Empty.self, "PUT", "/settings", body: B(previewThumbnails: previewThumbnails))
     }
 
     public func trash(_ node: DriveNode) async throws { _ = try await send(Empty.self, "DELETE", "/nodes/\(node.id)") }

@@ -57,6 +57,16 @@ public struct Me: Codable, Sendable, Equatable {
     public let plan: Plan?
     /// Today's transfer counters and the account-wide compute quota.
     public let usage: Usage?
+    /// Per-account Drive preferences (nil from older servers).
+    public let settings: Settings?
+
+    public struct Settings: Codable, Sendable, Equatable {
+        /// nil = default (on).
+        public let previewThumbnails: Bool?
+    }
+
+    /// Image thumbnails in the lists: on unless the account turned them off.
+    public var previewThumbnails: Bool { settings?.previewThumbnails ?? true }
 
     public struct Plan: Codable, Sendable, Equatable {
         public let key: String
