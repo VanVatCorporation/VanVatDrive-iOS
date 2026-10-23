@@ -21,6 +21,8 @@ public final class DriveClient: @unchecked Sendable {
     public var onTokenRefreshed: (@Sendable (String) -> Void)?
     /// Called on any 401, so the app can sign out.
     public var onUnauthorized: (@Sendable () -> Void)?
+    /// Called when the API refuses with 403 tos_required: new terms were published, the app should refresh /me (its `legal` then shows the popup).
+    public var onTosRequired: (@Sendable () -> Void)?
 
     public init(endpoints: DriveEndpoints = DriveEndpoints(), tokenProvider: @escaping @Sendable () -> String?) {
         self.endpoints = endpoints
@@ -35,8 +37,9 @@ public final class DriveClient: @unchecked Sendable {
 
     // MARK: - Plumbing
 
-    func makeRequest(_ method: String, _ path: String, query: [String: String?] = [:], body: (any Encodable)? = nil, auth: Bool = true) throws -> URLRequest {
-        guard var comps = URLComponents(url: endpoints.drive.appendingPathComponent("api/v2/drive" + path), resolvingAgainstBaseURL: false) else {
+    func makeRequest(_ method: String, _ path: String, query: [String: String?] = [:], body: (any Encodable)? = nil, auth: Bool = true,
+                     prefix: String = "api/v2/drive") throws -> URLRequest {
+        guard var comps = URLComponents(url: endpoints.drive.appendingPathComponent(prefix + path), resolvingAgainstBaseURL: false) else {
             throw DriveError(status: 0, message: "Bad URL")
         }
         let items = query.compactMap { k, v in v.map { URLQueryItem(name: k, value: $0) } }
@@ -64,6 +67,7 @@ public final class DriveClient: @unchecked Sendable {
                 code = obj["code"] as? String
             }
             if http.statusCode == 401 { onUnauthorized?() }
+            if http.statusCode == 403, code == "tos_required" { onTosRequired?() }
             throw DriveError(status: http.statusCode, code: code, message: message)
         }
     }

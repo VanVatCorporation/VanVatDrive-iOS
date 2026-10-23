@@ -59,6 +59,11 @@ import VanVatDriveKit
                     Section { GetMoreResourcesButton() }
                 }
 
+                Section("Legal") {
+                    Link(destination: model.client.legalPageURL(slug: "terms", lang: nil)) { Label("Terms of Service", systemImage: "doc.text") }
+                    Link(destination: model.client.legalPageURL(slug: "privacy", lang: nil)) { Label("Privacy Policy", systemImage: "hand.raised") }
+                }
+
                 Section {
                     Toggle("Preview thumbnails", isOn: Binding(get: { thumbnails }, set: { setThumbnails($0) }))
                 } header: { Text("Preferences") } footer: {

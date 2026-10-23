@@ -59,6 +59,8 @@ public struct Me: Codable, Sendable, Equatable {
     public let usage: Usage?
     /// Per-account Drive preferences (nil from older servers).
     public let settings: Settings?
+    /// Terms of Service / Privacy Policy: what this user still has to accept (a blocking popup when `required`).
+    public let legal: LegalStatus?
 
     public struct Settings: Codable, Sendable, Equatable {
         /// nil = default (on).
@@ -223,6 +225,9 @@ public struct DriveError: LocalizedError, Sendable {
     }
     public var errorDescription: String? { message }
     public var isUnauthorized: Bool { status == 401 }
+
+    /// New terms were published and the user has not accepted them yet.
+    public var isTosRequired: Bool { code == "tos_required" }
 
     /// The server refused because of a quota or plan limit (storage, file size, daily transfer, compute).
     /// These are the errors where "Get more resources" (the account tier upgrade) is the useful next step.

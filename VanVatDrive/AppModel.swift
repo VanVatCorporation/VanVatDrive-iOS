@@ -30,6 +30,10 @@ final class AppModel {
         client.onUnauthorized = { [weak self] in
             Task { @MainActor in self?.sessionExpired() }
         }
+        // New terms were published while the app was open: /me then reports legal.required and the popup appears.
+        client.onTosRequired = { [weak self] in
+            Task { @MainActor in await self?.refreshMe() }
+        }
         uploads.onItemFinished = { [weak self] _ in self?.contentChanged() }
     }
 
